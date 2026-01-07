@@ -120,27 +120,10 @@ if [ "$LINECOUNT" -eq 1 ]; then
   exit 0
 fi
 
-FILE="$(printf "%s\n" "$FILES" | awk 'BEGIN{srand()} {a[NR]=$0} END{print a[int(rand()*NR)+1]}')"
-
-TOTAL_LINES="$(awk 'END{print NR}' "$FILE" 2>/dev/null || echo 0)"
-if [ "$TOTAL_LINES" -le 0 ]; then
-  echo "Could not read file: $FILE"
-  exit 1
-fi
-
-LINE_NO="$(awk -v n="$TOTAL_LINES" 'BEGIN{srand(); print int(rand()*n)+1}')"
-LINE="$(awk -v n="$LINE_NO" 'NR==n{print; exit}' "$FILE")"
-
-# Avoid empty/whitespace-only lines (retry)
-i=0
-while [ -z "$(printf "%s" "$LINE" | tr -d '[:space:]')" ] && [ $i -lt 15 ]; do
-  LINE_NO="$(awk -v n="$TOTAL_LINES" 'BEGIN{srand(); print int(rand()*n)+1}')"
-  LINE="$(awk -v n="$LINE_NO" 'NR==n{print; exit}' "$FILE")"
-  i=$((i+1))
-done
-
 RED="$(printf '\033[31m')"
+GREEN="$(printf '\033[32m')"
 RESET="$(printf '\033[0m')"
+
 # Helper to print context with line numbers
 print_range() {
   _from="$1"
@@ -164,31 +147,68 @@ print_range() {
   fi
 }
 
-# --- show pre-context (before reveal) ---
-PRE_FROM=$((LINE_NO - CONTEXT))
-PRE_TO=$((LINE_NO + CONTEXT))
-[ "$PRE_FROM" -lt 1 ] && PRE_FROM=1
-[ "$PRE_TO" -gt "$TOTAL_LINES" ] && PRE_TO="$TOTAL_LINES"
+# --- main game loop ---
+while :; do
 
-echo ""
-echo "🎯 RANDOM LINE (showing context ±$CONTEXT)"
-echo "------------------------------------------------------------"
-print_range "$PRE_FROM" "$PRE_TO" "$PRE_FROM" "$RED"
-echo "------------------------------------------------------------"
-echo
-echo "Think: where is this? Press Enter to reveal…"
-read -r _
+  # Better per-round seed (avoids repeats when looping fast)
+  # date +%s%N might not exist everywhere; fall back to seconds.
+  NOW_NS="$(date +%s%N 2>/dev/null || date +%s)"
+  SEED_STR="$$-$NOW_NS"
+  SEED_NUM="$(printf "%s" "$SEED_STR" | cksum | awk '{print $1}')"
 
-# --- reveal solution + bigger context ---
-REV_FROM=$((LINE_NO - REVEAL))
-REV_TO=$((LINE_NO + REVEAL))
-[ "$REV_FROM" -lt 1 ] && REV_FROM=1
-[ "$REV_TO" -gt "$TOTAL_LINES" ] && REV_TO="$TOTAL_LINES"
+  FILE="$(printf "%s\n" "$FILES" | awk -v seed="$SEED_NUM" '
+    BEGIN { srand(seed) }
+    { a[NR] = $0 }
+    END { print a[int(rand() * NR) + 1] }
+  ')"
 
-GREEN="$(printf '\033[32m')"
+  TOTAL_LINES="$(awk 'END{print NR}' "$FILE" 2>/dev/null || echo 0)"
+  if [ "$TOTAL_LINES" -le 0 ]; then
+    echo "Could not read file: $FILE" >&2
+    continue
+  fi
 
-echo "File: ${GREEN}${FILE}${RESET}"
-echo "Line: $LINE_NO"
-echo
-echo "Context (±$REVEAL):"
-print_range "$REV_FROM" "$REV_TO" "$REV_FROM"
+  LINE_NO="$(awk -v n="$TOTAL_LINES" -v seed="$SEED_NUM" '
+    BEGIN { srand(seed + 1); print int(rand() * n) + 1 }
+  ')"
+  LINE="$(awk -v n="$LINE_NO" 'NR==n{print; exit}' "$FILE")"
+
+  # Avoid empty/whitespace-only lines (retry)
+  i=0
+  while [ -z "$(printf "%s" "$LINE" | tr -d '[:space:]')" ] && [ $i -lt 15 ]; do
+    LINE_NO="$(awk -v n="$TOTAL_LINES" -v seed="$SEED_NUM" -v i="$i" '
+      BEGIN { srand(seed + 2 + i); print int(rand() * n) + 1 }
+    ')"
+    LINE="$(awk -v n="$LINE_NO" 'NR==n{print; exit}' "$FILE")"
+    i=$((i+1))
+  done
+
+  PRE_FROM=$((LINE_NO - CONTEXT))
+  PRE_TO=$((LINE_NO + CONTEXT))
+  [ "$PRE_FROM" -lt 1 ] && PRE_FROM=1
+  [ "$PRE_TO" -gt "$TOTAL_LINES" ] && PRE_TO="$TOTAL_LINES"
+
+  echo ""
+  echo "🎯 RANDOM LINE (showing context ±$CONTEXT)"
+  echo "------------------------------------------------------------"
+  print_range "$PRE_FROM" "$PRE_TO" "$PRE_FROM" "$RED"
+  echo "------------------------------------------------------------"
+  echo
+  echo "Think: where is this? Press Enter to reveal…"
+  read -r _
+
+  REV_FROM=$((LINE_NO - REVEAL))
+  REV_TO=$((LINE_NO + REVEAL))
+  [ "$REV_FROM" -lt 1 ] && REV_FROM=1
+  [ "$REV_TO" -gt "$TOTAL_LINES" ] && REV_TO="$TOTAL_LINES"
+
+  echo "File: ${GREEN}${FILE}${RESET}"
+  echo "Line: $LINE_NO"
+  echo
+  echo "Context (±$REVEAL):"
+  print_range "$REV_FROM" "$REV_TO" "$REV_FROM"
+
+  echo
+  echo "Press Enter to go again"
+  read -r _
+done
