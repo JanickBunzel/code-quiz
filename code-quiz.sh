@@ -5,10 +5,13 @@ set -eu
 #   ./code-quiz.sh
 #   ./code-quiz.sh frontend/src -c 2
 #   ./code-quiz.sh . --context 1 --reveal 20
+#   ./code-quiz.sh . --linecount
+#   ./code-quiz.sh -l
 
 ROOT="."
 CONTEXT=1   # lines above/below shown before reveal
 REVEAL=10   # lines above/below shown on reveal
+LINECOUNT=0 # 1 => print total eligible line count and exit
 
 # --- arg parsing (POSIX sh) ---
 while [ $# -gt 0 ]; do
@@ -23,11 +26,16 @@ while [ $# -gt 0 ]; do
       REVEAL="$2"
       shift 2
       ;;
+    -l|--linecount)
+      LINECOUNT=1
+      shift 1
+      ;;
     -h|--help)
-      echo "Usage: $0 [path] [-c|--context N] [-r|--reveal N]"
-      echo "  path            root folder (default: .)"
-      echo "  -c, --context N show ±N lines before reveal (default: 1)"
-      echo "  -r, --reveal N  show ±N lines on reveal (default: 10)"
+      echo "Usage: $0 [path] [-c|--context N] [-r|--reveal N] [-l|--linecount]"
+      echo "  path              root folder (default: .)"
+      echo "  -c, --context N   show ±N lines before reveal (default: 1)"
+      echo "  -r, --reveal N    show ±N lines on reveal (default: 10)"
+      echo "  -l, --linecount   print total eligible line count and exit"
       exit 0
       ;;
     --)
@@ -86,6 +94,30 @@ FILES="$(find "$ROOT" \
 if [ -z "${FILES:-}" ]; then
   echo "No files found under: $ROOT"
   exit 1
+fi
+
+# --- linecount arc ---
+if [ "$LINECOUNT" -eq 1 ]; then
+  total_lines=0
+  total_files=0
+
+  # Read newline-separated file list
+  printf "%s\n" "$FILES" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    total_files=$((total_files + 1))
+    n="$(awk 'END{print NR}' "$f" 2>/dev/null || printf "0")"
+    case "$n" in (""|*[!0-9]*) n=0;; esac
+    total_lines=$((total_lines + n))
+    # POSIX sh: variables in a pipeline subshell won't survive outside.
+    # So we print intermediate totals and recompute below without relying on these.
+    printf "%s\t%s\n" "$n" "$f"
+  done | awk '
+    { sum += $1; files += 1 }
+    END {
+      printf "Eligible files: %d\nEligible lines: %d\n", files, sum
+    }
+  '
+  exit 0
 fi
 
 FILE="$(printf "%s\n" "$FILES" | awk 'BEGIN{srand()} {a[NR]=$0} END{print a[int(rand()*NR)+1]}')"
@@ -152,7 +184,6 @@ REV_FROM=$((LINE_NO - REVEAL))
 REV_TO=$((LINE_NO + REVEAL))
 [ "$REV_FROM" -lt 1 ] && REV_FROM=1
 [ "$REV_TO" -gt "$TOTAL_LINES" ] && REV_TO="$TOTAL_LINES"
-
 
 GREEN="$(printf '\033[32m')"
 
